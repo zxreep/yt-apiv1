@@ -1,0 +1,14 @@
+{
+  "name": "yt-api-light",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "echo 'No tests'"
+  },
+  "dependencies": {
+    "youtubei.js": "^10.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
