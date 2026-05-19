@@ -1,4 +1,15 @@
-import { Innertube } from 'youtubei.js';
+import { Innertube, Platform } from 'youtubei.js/web';
+
+// CF Workers has no eval(), but the Function constructor works fine.
+// youtubei.js needs this shim to run YouTube's obfuscated decipher script.
+// Without it, format.decipher() silently fails and all URLs are null.
+Platform.shim.eval = async (data, env) => {
+  const props = [];
+  if (env.n)   props.push(`n: exportedVars.nFunction("${env.n}")`);
+  if (env.sig) props.push(`sig: exportedVars.sigFunction("${env.sig}")`);
+  const code = `${data.output}\nreturn { ${props.join(', ')} }`;
+  return new Function(code)();
+};
 
 // Robust URL parser for all YouTube formats
 function parseYouTubeUrl(rawUrl) {
@@ -33,16 +44,15 @@ function formatSize(bytes) {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(mb * 1024).toFixed(0)} KB`;
 }
 
-// Reuse the Innertube instance across requests (warm starts)
+// Reuse Innertube instance across warm requests
 let ytInstance = null;
 
 async function getYT() {
   if (!ytInstance) {
     ytInstance = await Innertube.create({
-      // Use CF Workers' native fetch — no undici, no Node.js HTTP stack
-      fetch: (url, options) => fetch(url, options),
-      generate_session_locally: true,
-      enable_session_cache: false,
+      fetch: (url, options) => fetch(url, options), // use CF native fetch
+      retrieve_player: true,                        // needed to decipher URLs
+      generate_session_locally: true,               // skip one round-trip to YouTube
     });
   }
   return ytInstance;
@@ -62,8 +72,8 @@ export default {
     if (request.method !== 'GET')
       return new Response(JSON.stringify({ error: 'Method not allowed' }), { headers, status: 405 });
 
-    const url = new URL(request.url);
-    const rawVideoUrl = url.searchParams.get('url');
+    const reqUrl = new URL(request.url);
+    const rawVideoUrl = reqUrl.searchParams.get('url');
     if (!rawVideoUrl)
       return new Response(JSON.stringify({ error: 'Missing ?url= parameter' }), { headers, status: 400 });
 
@@ -73,7 +83,9 @@ export default {
 
     try {
       const yt = await getYT();
-      const info = await yt.getBasicInfo(parsed.id, 'WEB');
+
+      // v10 API: client must be an object, not a bare string
+      const info = await yt.getBasicInfo(parsed.id, { client: 'WEB' });
 
       const details = info.basic_info;
       const streamingData = info.streaming_data;
@@ -84,24 +96,32 @@ export default {
       ];
 
       const formats = rawFormats
-        .filter(f => f.url)
         .map(f => {
-          const hasVideo = !!f.width;
-          const hasAudio = !!f.audio_sample_rate;
+          // f.url is null for most videos — must call decipher() to get the real URL
+          let url;
+          try {
+            url = f.decipher(yt.session.player);
+          } catch {
+            url = f.url ?? null; // fallback for pre-signed URLs (rare)
+          }
+          if (!url) return null;
+
           return {
-            itag: f.itag,
-            type:
-              hasVideo && hasAudio ? 'video+audio' :
-              hasVideo             ? 'video'       :
-              hasAudio             ? 'audio'       : 'unknown',
+            itag:    f.itag,
+            // has_audio / has_video are the correct youtubei.js boolean fields
+            type:    f.has_video && f.has_audio ? 'video+audio' :
+                     f.has_video               ? 'video'       :
+                     f.has_audio               ? 'audio'       : 'unknown',
             mime:    f.mime_type?.split(';')[0] ?? 'unknown',
-            quality: f.quality_label ?? f.audio_quality?.replace('AUDIO_QUALITY_', '').toLowerCase() ?? 'unknown',
-            fps:     f.fps ?? null,
-            bitrate: f.bitrate ?? f.audio_sample_rate ?? null,
+            quality: f.quality_label ??
+                     f.audio_quality?.replace('AUDIO_QUALITY_', '').toLowerCase() ?? 'unknown',
+            fps:     f.fps     ?? null,
+            bitrate: f.bitrate ?? null,
             size:    formatSize(f.content_length),
-            url:     f.url,
+            url,
           };
-        });
+        })
+        .filter(Boolean);
 
       formats.sort((a, b) => {
         const order = { 'video+audio': 1, video: 2, audio: 3, unknown: 4 };
@@ -109,8 +129,8 @@ export default {
       });
 
       return new Response(JSON.stringify({
-        title:    details?.title  ?? 'Unknown',
-        author:   details?.author ?? 'Unknown',
+        title:    details?.title    ?? 'Unknown',
+        author:   details?.author   ?? 'Unknown',
         duration: details?.duration ?? 0,
         is_music: parsed.isMusic,
         formats,
@@ -128,7 +148,7 @@ export default {
         return new Response(JSON.stringify({ error: 'YouTube rate limit. Try again later.' }), { headers, status: 429 });
 
       return new Response(JSON.stringify({
-        error: 'Extraction failed',
+        error:   'Extraction failed',
         details: msg || 'Unknown error',
       }), { headers, status: 500 });
     }
