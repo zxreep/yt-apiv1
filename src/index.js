@@ -1,8 +1,7 @@
 import { Innertube, Platform } from 'youtubei.js/web';
 
-// CF Workers has no eval(), but the Function constructor works fine.
-// youtubei.js needs this shim to run YouTube's obfuscated decipher script.
-// Without it, format.decipher() silently fails and all URLs are null.
+// CF Workers has no eval(), but the Function constructor works.
+// youtubei.js needs this to run YouTube's obfuscated decipher script.
 Platform.shim.eval = async (data, env) => {
   const props = [];
   if (env.n)   props.push(`n: exportedVars.nFunction("${env.n}")`);
@@ -11,13 +10,11 @@ Platform.shim.eval = async (data, env) => {
   return new Function(code)();
 };
 
-// Robust URL parser for all YouTube formats
 function parseYouTubeUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
     const host = url.hostname.replace(/^www\.|m\./, '');
     const isMusic = host === 'music.youtube.com';
-
     const patterns = [
       /v=([a-zA-Z0-9_-]{11})/,
       /\/shorts\/([a-zA-Z0-9_-]{11})/,
@@ -27,15 +24,12 @@ function parseYouTubeUrl(rawUrl) {
       /\/v\/([a-zA-Z0-9_-]{11})/,
       /\/watch\/([a-zA-Z0-9_-]{11})/,
     ];
-
     for (const pattern of patterns) {
       const match = url.href.match(pattern);
       if (match) return { id: match[1], isMusic };
     }
     return null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function formatSize(bytes) {
@@ -44,15 +38,14 @@ function formatSize(bytes) {
   return mb >= 1 ? `${mb.toFixed(1)} MB` : `${(mb * 1024).toFixed(0)} KB`;
 }
 
-// Reuse Innertube instance across warm requests
 let ytInstance = null;
 
 async function getYT() {
   if (!ytInstance) {
     ytInstance = await Innertube.create({
-      fetch: (url, options) => fetch(url, options), // use CF native fetch
-      retrieve_player: true,                        // needed to decipher URLs
-      generate_session_locally: true,               // skip one round-trip to YouTube
+      fetch: (url, options) => fetch(url, options),
+      retrieve_player: true,
+      generate_session_locally: true,
     });
   }
   return ytInstance;
@@ -74,6 +67,8 @@ export default {
 
     const reqUrl = new URL(request.url);
     const rawVideoUrl = reqUrl.searchParams.get('url');
+    const debug = reqUrl.searchParams.get('debug') === '1'; // ?debug=1 dumps raw info
+
     if (!rawVideoUrl)
       return new Response(JSON.stringify({ error: 'Missing ?url= parameter' }), { headers, status: 400 });
 
@@ -84,8 +79,19 @@ export default {
     try {
       const yt = await getYT();
 
-      // v10 API: client must be an object, not a bare string
-      const info = await yt.getBasicInfo(parsed.id, 'WEB');
+      // WEB/ANDROID/iOS all get "Sign in to confirm you're not a bot" from YouTube
+      // and return no videoDetails. TV_EMBEDDED bypasses this bot detection check.
+      const info = await yt.getBasicInfo(parsed.id, 'TV_EMBEDDED');
+
+      // Debug mode: dump raw response so you can inspect field names
+      if (debug) {
+        return new Response(JSON.stringify({
+          basic_info: info.basic_info,
+          has_streaming_data: !!info.streaming_data,
+          format_count: (info.streaming_data?.formats?.length ?? 0) + (info.streaming_data?.adaptive_formats?.length ?? 0),
+          playability: info.playability_status,
+        }, null, 2), { headers, status: 200 });
+      }
 
       const details = info.basic_info;
       const streamingData = info.streaming_data;
@@ -97,18 +103,16 @@ export default {
 
       const formats = rawFormats
         .map(f => {
-          // f.url is null for most videos — must call decipher() to get the real URL
           let url;
           try {
             url = f.decipher(yt.session.player);
           } catch {
-            url = f.url ?? null; // fallback for pre-signed URLs (rare)
+            url = f.url ?? null;
           }
           if (!url) return null;
 
           return {
             itag:    f.itag,
-            // has_audio / has_video are the correct youtubei.js boolean fields
             type:    f.has_video && f.has_audio ? 'video+audio' :
                      f.has_video               ? 'video'       :
                      f.has_audio               ? 'audio'       : 'unknown',
@@ -143,7 +147,7 @@ export default {
       if (msg.includes('private') || msg.includes('unavailable'))
         return new Response(JSON.stringify({ error: 'Video is private or unavailable' }), { headers, status: 403 });
       if (msg.includes('age') || msg.includes('login'))
-        return new Response(JSON.stringify({ error: 'Age-restricted video. Login required.' }), { headers, status: 403 });
+        return new Response(JSON.stringify({ error: 'Age-restricted or login-required video.' }), { headers, status: 403 });
       if (msg.includes('429') || msg.includes('rate limit'))
         return new Response(JSON.stringify({ error: 'YouTube rate limit. Try again later.' }), { headers, status: 429 });
 
