@@ -1,4 +1,4 @@
-name = "yt-api2"
+name = "yt-apiv1"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat_v2"]
