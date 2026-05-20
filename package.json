@@ -1,14 +1,9 @@
 {
-  "name": "yt-api-light",
+  "name": "yt-stream-extractor",
   "version": "1.0.0",
+  "description": "Educational YouTube stream link extractor for Cloudflare Pages",
   "type": "module",
-  "scripts": {
-    "test": "echo 'No tests'"
-  },
   "dependencies": {
-    "youtubei.js": "^10.0.0"
-  },
-  "devDependencies": {
-    "wrangler": "^4.0.0"
+    "@ybd-project/ytdl-core": "^4.0.0"
   }
 }
