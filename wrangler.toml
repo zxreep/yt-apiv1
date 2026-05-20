@@ -2,7 +2,7 @@ name = "yt-api2"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat_v2"]
-PROXY_FILE_URL = "https://github.com/zxreep/yt-apiv1/proxies/2026-05-20.txt"
+PROXY_FILE_URL = "https://raw.githubusercontent.com/zxreep/yt-apiv1/main/proxies/2026-05-20.txt"
 [vars]
 CACHE_TTL = "300"
 
