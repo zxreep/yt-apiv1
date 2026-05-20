@@ -85,7 +85,7 @@ export default {
       const yt = await getYT();
 
       // v10 API: client must be an object, not a bare string
-      const info = await yt.getBasicInfo(parsed.id, { client: 'WEB' });
+      const info = await yt.getBasicInfo(parsed.id, 'WEB');
 
       const details = info.basic_info;
       const streamingData = info.streaming_data;
